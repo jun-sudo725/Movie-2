@@ -1,6 +1,6 @@
-# Cedric & Samira – Ein Strichmännchen-Film
+# Cedric & Samira – Der Film
 
-Ein kleiner, süsser Strichmännchen-Animationsfilm (ca. 6 Minuten) über das Kennenlernen von Cedric und Samira.
+Ein kleiner, süsser Cartoon-Animationsfilm (ca. 6 Minuten) über das Kennenlernen von Cedric und Samira.
 
 **Anschauen:** `index.html` im Browser öffnen und auf «Film starten» klicken.
 
