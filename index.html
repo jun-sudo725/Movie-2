@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cedric &amp; Samira – Ein Strichmännchen-Film</title>
+<style>
+  :root { --ink:#2b2b3a; --cream:#fff8ec; --pink:#f0738a; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:#1d1b2a; color:#fff;
+    font-family:"Comic Sans MS","Chalkboard SE","Segoe Print","Comic Neue",cursive,sans-serif; }
+  body { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:12px; gap:10px; }
+  #stage { position:relative; width:min(100%, calc((100vh - 110px) * 16 / 9)); aspect-ratio:16/9;
+    border-radius:14px; overflow:hidden; box-shadow:0 10px 40px rgba(0,0,0,.5); background:var(--cream); }
+  canvas { width:100%; height:100%; display:block; cursor:pointer; }
+  #overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; background:rgba(29,27,42,.55); text-align:center; padding:16px; }
+  #overlay.hidden { display:none; }
+  #overlay button { font:inherit; font-size:clamp(18px,3.2vw,30px); padding:.5em 1.2em; border-radius:999px; border:4px solid var(--ink);
+    background:var(--pink); color:#fff; cursor:pointer; box-shadow:0 5px 0 var(--ink); }
+  #overlay button:active { transform:translateY(3px); box-shadow:0 2px 0 var(--ink); }
+  #bar { width:min(100%, calc((100vh - 110px) * 16 / 9)); display:flex; align-items:center; gap:8px; }
+  #bar button { font:inherit; font-size:16px; min-width:44px; height:40px; border-radius:10px; border:0; background:#35324a; color:#fff; cursor:pointer; }
+  #bar button:hover { background:#4a4666; }
+  #prog { flex:1; height:14px; background:#35324a; border-radius:7px; position:relative; cursor:pointer; overflow:hidden; }
+  #fill { position:absolute; left:0; top:0; bottom:0; width:0; background:var(--pink); }
+  .tick { position:absolute; top:0; bottom:0; width:2px; background:rgba(255,255,255,.35); }
+  #label { width:min(100%, calc((100vh - 110px) * 16 / 9)); font-size:14px; opacity:.8; display:flex; justify-content:space-between; gap:10px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" width="1280" height="720"></canvas>
+  <div id="overlay"><button id="start">&#9654;&#xFE0E; Film starten</button></div>
+</div>
+<div id="bar">
+  <button id="prev" title="Vorherige Szene">&laquo;</button>
+  <button id="pp" title="Play / Pause (Leertaste)">&#9654;&#xFE0E;</button>
+  <button id="next" title="Nächste Szene">&raquo;</button>
+  <div id="prog"><div id="fill"></div></div>
+  <button id="fs" title="Vollbild">&#x26F6;&#xFE0E;</button>
+</div>
+<div id="label"><span id="sc"></span><span id="tm"></span></div>
+
+<script>
+'use strict';
+const cv = document.getElementById('c'), X = cv.getContext('2d');
+const W = 1280, H = 720, PI = Math.PI;
+const INK = '#2b2b3a', CREAM = '#fff8ec';
+const FONT = '"Comic Sans MS","Chalkboard SE","Segoe Print","Comic Neue",cursive,sans-serif';
+const BLUE = '#2f6fde', ROSE = '#c23a5a';
+
+/* ---------- helpers ---------- */
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+const prog = (t, a, b) => ease(clamp((t - a) / (b - a)));
+const inT = (t, a, b) => t >= a && t < b;
+const rnd = i => { const v = Math.sin(i * 127.1 + 3.3) * 43758.5453; return v - Math.floor(v); };
+
+function rr(x, y, w, h, r) {
+  X.beginPath(); X.moveTo(x + r, y); X.arcTo(x + w, y, x + w, y + h, r); X.arcTo(x + w, y + h, x, y + h, r);
+  X.arcTo(x, y + h, x, y, r); X.arcTo(x, y, x + w, y, r); X.closePath();
+}
+function text(s, x, y, size = 28, col = INK, align = 'center', bold = false) {
+  X.font = `${bold ? 'bold ' : ''}${size}px ${FONT}`; X.textAlign = align; X.textBaseline = 'middle';
+  X.fillStyle = col; X.fillText(s, x, y);
+}
+function wrap(s, maxW) {
+  const out = []; let line = '';
+  for (const w of s.split(' ')) {
+    const test = line ? line + ' ' + w : w;
+    if (X.measureText(test).width > maxW && line) { out.push(line); line = w; } else line = test;
+  }
+  if (line) out.push(line); return out;
+}
+function heart(x, y, s, col = '#f0506e', a = 1) {
+  X.save(); X.globalAlpha *= a; X.translate(x, y); X.scale(s / 20, s / 20); X.fillStyle = col;
+  X.beginPath(); X.moveTo(0, 8); X.bezierCurveTo(-22, -8, -10, -24, 0, -10); X.bezierCurveTo(10, -24, 22, -8, 0, 8);
+  X.fill(); X.restore();
+}
+function hearts(t, x, y, n = 6, spread = 80, from = 0) {
+  for (let i = 0; i < n; i++) {
+    const p = ((t - from) * .35 + rnd(i + 5)) % 1; if (t < from) continue;
+    heart(x + (rnd(i) - .5) * spread * 2 + Math.sin(t * 2 + i) * 10, y - p * 190, 14 + rnd(i + 9) * 16, i % 2 ? '#f0506e' : '#ff8fa8', Math.sin(p * PI));
+  }
+}
+function sky(c1, c2, c3) {
+  const g = X.createLinearGradient(0, 0, 0, H); g.addColorStop(0, c1); g.addColorStop(.7, c2); if (c3) g.addColorStop(1, c3);
+  X.fillStyle = g; X.fillRect(0, 0, W, H);
+}
+function stars(t, n = 60, maxY = .55) {
+  for (let i = 0; i < n; i++) {
+    X.globalAlpha = .4 + .6 * Math.abs(Math.sin(t * 1.5 + i)); X.fillStyle = '#fff';
+    X.beginPath(); X.arc(rnd(i) * W, rnd(i + 99) * H * maxY, 1 + rnd(i + 3) * 2, 0, 7); X.fill();
+  }
+  X.globalAlpha = 1;
+}
+function moon(x, y, r = 40) { X.fillStyle = '#fff6c9'; X.beginPath(); X.arc(x, y, r, 0, 7); X.fill(); X.fillStyle = 'rgba(0,0,0,.06)'; X.beginPath(); X.arc(x - 12, y - 8, r * .2, 0, 7); X.arc(x + 12, y + 12, r * .14, 0, 7); X.fill(); }
+function ground(y, col) { X.fillStyle = col; X.fillRect(0, y, W, H - y); }
+function snow(t, n = 80) {
+  X.fillStyle = '#fff';
+  for (let i = 0; i < n; i++) {
+    X.beginPath(); X.arc((rnd(i) * W + Math.sin(t + i) * 22 + W) % W, (rnd(i + 7) * H + t * (35 + rnd(i + 3) * 45)) % H, 2 + rnd(i + 1) * 3, 0, 7); X.fill();
+  }
+}
+function lampions(t, y0, n = 12) {
+  X.strokeStyle = '#555'; X.lineWidth = 2; X.beginPath();
+  for (let i = 0; i <= n; i++) { const x = i * W / n, y = y0 + Math.sin(i / n * PI * 3) * 22 + 20; i ? X.lineTo(x, y) : X.moveTo(x, y); } X.stroke();
+  const cols = ['#ffd166', '#ef476f', '#06d6a0', '#74b9ff', '#ff9f43'];
+  for (let i = 0; i <= n; i++) {
+    const x = i * W / n, y = y0 + Math.sin(i / n * PI * 3) * 22 + 34;
+    X.fillStyle = cols[i % 5]; X.globalAlpha = .75 + .25 * Math.sin(t * 3 + i); X.beginPath(); X.arc(x, y, 13, 0, 7); X.fill();
+  } X.globalAlpha = 1;
+}
+
+/* ---------- stick figures ---------- */
+function head(x, hy, r, o = {}) {
+  const s = r / 23, dir = o.dir ?? 1, face = o.face || 'smile', c = o.c || INK;
+  X.lineWidth = 5 * s; X.lineCap = 'round'; X.lineJoin = 'round'; X.strokeStyle = c;
+  if (o.hair === 'long') {
+    X.fillStyle = o.hc; X.beginPath(); X.moveTo(x - r * 1.1, hy - r * .15);
+    X.quadraticCurveTo(x - r * 1.55, hy + r * 1.7, x - r * .95, hy + r * 2.4); X.lineTo(x + r * .95, hy + r * 2.4);
+    X.quadraticCurveTo(x + r * 1.55, hy + r * 1.7, x + r * 1.1, hy - r * .15); X.arc(x, hy - r * .15, r * 1.1, 0, PI, true); X.fill();
+  }
+  X.fillStyle = face === 'back' ? (o.hc || '#555') : '#fff'; X.beginPath(); X.arc(x, hy, r, 0, 7); X.fill(); X.stroke();
+  // hair on top
+  X.fillStyle = o.hc || '#555';
+  const capTop = () => { X.beginPath(); X.arc(x, hy, r * 1.06, PI * 1.08, PI * 1.92); X.closePath(); X.fill(); };
+  if (o.hair === 'short') { capTop(); X.beginPath(); X.arc(x + dir * r * .3, hy - r * 1.0, r * .32, 0, 7); X.fill(); }
+  else if (o.hair === 'long') { X.beginPath(); X.arc(x, hy, r * 1.08, PI * 1.02, PI * 1.98); X.quadraticCurveTo(x + dir * r * .2, hy - r * .35, x - r * 1.05, hy - r * .05); X.fill(); }
+  else if (o.hair === 'bun') { capTop(); X.beginPath(); X.arc(x, hy - r * 1.25, r * .42, 0, 7); X.fill(); }
+  else if (o.hair === 'cap') { capTop(); X.fillRect(x + (dir >= 0 ? 0 : -r * 1.5), hy - r * .62, r * 1.5, r * .2); }
+  else if (o.hair === 'spiky') { X.beginPath(); X.moveTo(x - r, hy - r * .4); for (let i = 0; i <= 6; i++) X.lineTo(x - r + i * r / 3, hy - r * (i % 2 ? 1.5 : .85)); X.lineTo(x + r, hy - r * .4); X.closePath(); X.fill(); }
+  else if (o.hair === 'curly') { for (let i = 0; i < 7; i++) { const a = PI + i * PI / 6; X.beginPath(); X.arc(x + Math.cos(a) * r, hy + Math.sin(a) * r, r * .34, 0, 7); X.fill(); } }
+  if (face === 'back') return;
+  const ex = x + dir * 5 * s, ey = hy - 2 * s;
+  if (o.blush) { X.fillStyle = 'rgba(255,120,150,.55)'; X.beginPath(); X.ellipse(ex - 13 * s, hy + 7 * s, 5.5 * s, 3.5 * s, 0, 0, 7); X.ellipse(ex + 13 * s, hy + 7 * s, 5.5 * s, 3.5 * s, 0, 0, 7); X.fill(); }
+  X.fillStyle = INK; X.strokeStyle = INK; X.lineWidth = 3 * s;
+  const dot = (dx, rr2 = 2.8) => { X.beginPath(); X.arc(ex + dx * s, ey, rr2 * s, 0, 7); X.fill(); };
+  const mouth = (kind) => {
+    X.beginPath();
+    if (kind === 'smile') X.arc(ex, hy + 3 * s, 8 * s, .15 * PI, .85 * PI);
+    else if (kind === 'sad') X.arc(ex, hy + 15 * s, 7 * s, 1.2 * PI, 1.8 * PI);
+    else if (kind === 'flat') { X.moveTo(ex - 6 * s, hy + 10 * s); X.lineTo(ex + 6 * s, hy + 10 * s); }
+    else if (kind === 'o') { X.arc(ex, hy + 10 * s, 4 * s, 0, 7); }
+    else if (kind === 'wavy') { X.moveTo(ex - 8 * s, hy + 10 * s); X.quadraticCurveTo(ex - 4 * s, hy + 5 * s, ex, hy + 10 * s); X.quadraticCurveTo(ex + 4 * s, hy + 15 * s, ex + 8 * s, hy + 10 * s); }
+    X.stroke();
+  };
+  if (face === 'laugh') {
+    X.beginPath(); X.arc(ex - 8 * s, ey + 2 * s, 4 * s, PI * 1.1, PI * 1.9); X.stroke(); X.beginPath(); X.arc(ex + 8 * s, ey + 2 * s, 4 * s, PI * 1.1, PI * 1.9); X.stroke();
+    X.fillStyle = '#b3364f'; X.beginPath(); X.arc(ex, hy + 6 * s, 8 * s, 0, PI); X.closePath(); X.fill(); X.stroke();
+  } else if (face === 'love') { heart(ex - 8 * s, ey + 1 * s, 9 * s); heart(ex + 8 * s, ey + 1 * s, 9 * s); mouth('smile'); }
+  else if (face === 'dizzy') {
+    for (const d of [-8, 8]) { X.beginPath(); X.moveTo(ex + (d - 4) * s, ey - 4 * s); X.lineTo(ex + (d + 4) * s, ey + 4 * s); X.moveTo(ex + (d + 4) * s, ey - 4 * s); X.lineTo(ex + (d - 4) * s, ey + 4 * s); X.stroke(); }
+    mouth('wavy');
+  } else if (face === 'o') { dot(-8, 3.6); dot(8, 3.6); mouth('o'); }
+  else { dot(-8); dot(8); mouth(face); }
+  if (o.sweat) { X.fillStyle = '#6ec6ff'; const sx = x - dir * r * 1.15, sy = hy - r * .5; X.beginPath(); X.moveTo(sx, sy - 9 * s); X.quadraticCurveTo(sx + 7 * s, sy + 4 * s, sx, sy + 6 * s); X.quadraticCurveTo(sx - 7 * s, sy + 4 * s, sx, sy - 9 * s); X.fill(); }
+}
+
+function fig(x, y, o = {}) {
+  const s = o.s || 1, c = o.c || INK, sit = o.sit || 0;
+  const hipY = y - (sit ? 46 : 62) * s + (o.bob || 0), neckY = hipY - 58 * s, r = 23 * s, hy = neckY - r + 2 * s;
+  X.save();
+  if (o.rot) { X.translate(x, hipY); X.rotate(o.rot); X.translate(-x, -hipY); }
+  X.lineWidth = 5 * s; X.lineCap = 'round'; X.lineJoin = 'round'; X.strokeStyle = c;
+  X.beginPath();
+  if (sit) {
+    X.moveTo(x, hipY); X.lineTo(x + sit * 38 * s, hipY + 2 * s); X.lineTo(x + sit * 40 * s, y);
+    X.moveTo(x, hipY); X.lineTo(x + sit * 28 * s, hipY + 8 * s); X.lineTo(x + sit * 28 * s, y);
+  } else {
+    const w = o.walk !== undefined ? Math.sin(o.walk) * 20 * s : 0, fy = y + (o.bob && !o.walk ? o.bob : 0);
+    X.moveTo(x, hipY); X.lineTo(x - 11 * s + w, fy); X.moveTo(x, hipY); X.lineTo(x + 11 * s - w, fy);
+  }
+  X.moveTo(x, neckY); X.lineTo(x, hipY); X.stroke();
+  if (o.dress) {
+    X.fillStyle = o.dress; X.beginPath(); X.moveTo(x, neckY + 6 * s); X.lineTo(x - 25 * s, hipY + 20 * s); X.lineTo(x + 25 * s, hipY + 20 * s); X.closePath(); X.fill(); X.stroke();
+  }
+  const sy = neckY + 12 * s, L = 50 * s, aL = o.aL ?? -.35, aR = o.aR ?? .35;
+  const hl = { x: x + Math.sin(aL) * L, y: sy + Math.cos(aL) * L }, hr = { x: x + Math.sin(aR) * L, y: sy + Math.cos(aR) * L };
+  X.beginPath(); X.moveTo(x, sy); X.lineTo(hl.x, hl.y); X.moveTo(x, sy); X.lineTo(hr.x, hr.y); X.stroke();
+  head(x, hy, r, o);
+  X.restore();
+  if (o.name) { text(o.name, x, y + 24, 20, o.nc || c, 'center', true); }
+  return { hl, hr, top: hy - r, hy, x };
+}
+const C = (x, y, o) => fig(x, y, { c: BLUE, hair: 'short', hc: '#6b4423', ...o });
+const S = (x, y, o) => fig(x, y, { c: ROSE, hair: 'long', hc: '#4a2a1a', dress: '#f58aa0', ...o });
+const topY = (y, s = 1, sit = 0) => y - (sit ? 152 : 168) * s;
+
+/* ---------- bubbles & captions ---------- */
+function bubble(str, x, y, o = {}) {
+  const a = o.a ?? 1, fs = o.fs || 26; X.font = `${fs}px ${FONT}`;
+  const lines = wrap(str, o.w || 330), tw = Math.max(...lines.map(l => X.measureText(l).width));
+  const bw = tw + 36, bh = lines.length * fs * 1.25 + 24;
+  const bx = clamp(x + (o.dx || 0) - bw / 2, 12, W - bw - 12), by = Math.max(10, y - 44 - bh);
+  X.save(); X.globalAlpha = a; const k = .8 + .2 * a; X.translate(x, y); X.scale(k, k); X.translate(-x, -y);
+  X.lineWidth = 3.5; X.strokeStyle = INK; X.fillStyle = '#fff';
+  rr(bx, by, bw, bh, 20); X.fill(); X.stroke();
+  const tx = clamp(x, bx + 30, bx + bw - 30), bb = by + bh;
+  if (o.think) { for (const [f, r] of [[.3, 9], [.65, 6], [.95, 4]]) { X.beginPath(); X.arc(lerp(tx, x, f), lerp(bb + 4, y - 4, f), r, 0, 7); X.fill(); X.stroke(); } }
+  else {
+    X.beginPath(); X.moveTo(tx - 13, bb - 2); X.lineTo(x, y - 6); X.lineTo(tx + 13, bb - 2); X.fill(); X.stroke();
+    X.strokeStyle = '#fff'; X.lineWidth = 5; X.beginPath(); X.moveTo(tx - 10, bb - 2.5); X.lineTo(tx + 10, bb - 2.5); X.stroke();
+  }
+  lines.forEach((l, i) => text(l, bx + bw / 2, by + 12 + fs * .62 + i * fs * 1.25, fs, o.col || INK, 'center', o.bold));
+  X.restore();
+}
+function say(t, a, b, str, x, y, o = {}) {
+  if (!inT(t, a, b)) return; bubble(str, x, y, { ...o, a: Math.min(clamp((t - a) / .25), clamp((b - t) / .25)) });
+}
+function cap(t, a, b, str) {
+  if (!inT(t, a, b)) return; const al = Math.min(clamp((t - a) / .35), clamp((b - t) / .35));
+  X.save(); X.globalAlpha = al; X.font = `26px ${FONT}`; const lines = wrap(str, 1050), tw = Math.max(...lines.map(l => X.measureText(l).width));
+  const bh = lines.length * 34 + 22, by = H - 16 - bh; X.fillStyle = 'rgba(30,28,45,.82)'; rr(W / 2 - tw / 2 - 26, by, tw + 52, bh, 18); X.fill();
+  lines.forEach((l, i) => text(l, W / 2, by + 28 + i * 34, 26, '#fff')); X.restore();
+}
+function pop(t, a, b, str, x, y, size = 40, col = '#f0506e', rot = 0) {
+  if (!inT(t, a, b)) return; const p = (t - a) / (b - a);
+  X.save(); X.translate(x, y - p * 20); X.rotate(rot); const k = .6 + .5 * Math.sin(Math.min(p * 3, 1) * PI / 2); X.scale(k, k); X.globalAlpha = Math.min(1, (1 - p) * 3);
+  X.lineWidth = 8; X.strokeStyle = '#fff'; X.font = `bold ${size}px ${FONT}`; X.textAlign = 'center'; X.textBaseline = 'middle'; X.strokeText(str, 0, 0);
+  text(str, 0, 0, size, col, 'center', true); X.restore();
+}
+
+/* ---------- props ---------- */
+function beer(x, y, s = 1) {
+  X.save(); X.translate(x, y); X.scale(s, s); X.lineWidth = 3; X.strokeStyle = INK;
+  X.fillStyle = '#ffc93c'; rr(-13, -34, 26, 36, 4); X.fill(); X.stroke(); X.fillStyle = '#fff'; rr(-15, -42, 30, 12, 6); X.fill(); X.stroke();
+  X.beginPath(); X.arc(15, -16, 9, -PI / 2, PI / 2); X.stroke(); X.restore();
+}
+function mug(x, y, t) {
+  X.lineWidth = 3; X.strokeStyle = INK; X.fillStyle = '#d6453d'; rr(x - 11, y - 20, 22, 24, 4); X.fill(); X.stroke(); X.beginPath(); X.arc(x + 12, y - 8, 7, -PI / 2, PI / 2); X.stroke();
+  X.strokeStyle = 'rgba(255,255,255,.8)'; X.lineWidth = 2.5;
+  for (let i = -1; i <= 1; i += 2) { X.beginPath(); X.moveTo(x + i * 4, y - 24); X.quadraticCurveTo(x + i * 4 + Math.sin(t * 3 + i) * 6, y - 36, x + i * 4, y - 46); X.stroke(); }
+}
+function cocktail(x, y, col) {
+  X.lineWidth = 3; X.strokeStyle = INK; X.fillStyle = col; X.beginPath(); X.moveTo(x - 20, y - 50); X.lineTo(x + 20, y - 50); X.lineTo(x, y - 22); X.closePath(); X.fill(); X.stroke();
+  X.beginPath(); X.moveTo(x, y - 22); X.lineTo(x, y); X.moveTo(x - 12, y); X.lineTo(x + 12, y); X.stroke();
+  X.strokeStyle = '#2e9e6b'; X.beginPath(); X.moveTo(x + 4, y - 40); X.lineTo(x + 18, y - 68); X.stroke();
+  X.fillStyle = '#ffd166'; X.beginPath(); X.arc(x - 16, y - 52, 7, 0, 7); X.fill();
+}
+function card2(x, y, col = '#3d7bff') { X.fillStyle = col; X.strokeStyle = INK; X.lineWidth = 2.5; rr(x - 17, y - 12, 34, 23, 4); X.fill(); X.stroke(); X.fillStyle = '#ffd166'; X.fillRect(x - 11, y - 5, 9, 7); }
+function note(x, y) { X.fillStyle = '#8fd694'; X.strokeStyle = INK; X.lineWidth = 2.5; rr(x - 20, y - 11, 40, 22, 3); X.fill(); X.stroke(); text('20', x, y + 1, 14, INK, 'center', true); }
+function car(x, y, col, s = 1, t = 0, old = false) {
+  X.save(); X.translate(x, y + Math.sin(t * 14) * 1.5 * s); X.scale(s, s); X.lineWidth = 4; X.strokeStyle = INK; X.lineJoin = 'round';
+  X.fillStyle = col; X.beginPath(); X.moveTo(-82, -68); X.quadraticCurveTo(-62, -124, -12, -124); X.lineTo(48, -124); X.quadraticCurveTo(84, -120, 100, -68); X.closePath(); X.fill(); X.stroke();
+  rr(-130, -70, 260, 52, 18); X.fill(); X.stroke();
+  X.fillStyle = '#dff3ff'; X.beginPath(); X.moveTo(-64, -72); X.quadraticCurveTo(-50, -112, -12, -112); X.lineTo(44, -112); X.quadraticCurveTo(70, -108, 82, -72); X.closePath(); X.fill(); X.stroke();
+  X.fillStyle = '#ffe97a'; X.beginPath(); X.arc(124, -50, 8, 0, 7); X.fill(); X.stroke();
+  if (old) { X.fillStyle = '#a8673a'; X.beginPath(); X.arc(-95, -40, 7, 0, 7); X.arc(-84, -34, 4, 0, 7); X.fill(); }
+  for (const wx of [-76, 76]) { X.fillStyle = '#333'; X.beginPath(); X.arc(wx, -18, 22, 0, 7); X.fill(); X.stroke(); X.fillStyle = '#bbb'; X.beginPath(); X.arc(wx, -18, 8, 0, 7); X.fill(); }
+  X.restore();
+  if (old) for (let i = 0; i < 3; i++) { const p = (t * .8 + i / 3) % 1; X.fillStyle = `rgba(200,200,210,${.6 * (1 - p)})`; X.beginPath(); X.arc(x - 140 * s - p * 70 * s, y - 30 * s - p * 25 * s, (6 + p * 12) * s, 0, 7); X.fill(); }
+}
+function table(x, y, w, h = 70, col = '#b98556') { X.strokeStyle = INK; X.lineWidth = 4; X.fillStyle = col; rr(x - w / 2, y - h, w, 12, 4); X.fill(); X.stroke(); X.beginPath(); X.moveTo(x, y - h + 12); X.lineTo(x, y); X.moveTo(x - 24, y); X.lineTo(x + 24, y); X.stroke(); }
+function chair(x, y, dir, s = 1) { X.strokeStyle = '#7a5a3a'; X.lineWidth = 5 * s; X.beginPath(); X.moveTo(x - dir * 16 * s, y - 100 * s); X.lineTo(x - dir * 16 * s, y); X.moveTo(x - dir * 16 * s, y - 42 * s); X.lineTo(x + dir * 22 * s, y - 42 * s); X.lineTo(x + dir * 22 * s, y); X.stroke(); }
+function bowl(x, y, t) {
+  X.lineWidth = 3; X.strokeStyle = INK; X.fillStyle = '#fff'; X.beginPath(); X.arc(x, y - 22, 26, 0, PI); X.closePath(); X.fill(); X.stroke();
+  X.strokeStyle = '#e8b04a'; X.beginPath(); for (let i = -2; i <= 2; i++) { X.moveTo(x + i * 8, y - 22); X.quadraticCurveTo(x + i * 8 + 4, y - 32, x + i * 8, y - 24); } X.stroke();
+  X.strokeStyle = 'rgba(255,255,255,.85)'; X.lineWidth = 2.5; X.beginPath(); X.moveTo(x, y - 36); X.quadraticCurveTo(x + Math.sin(t * 3) * 8, y - 50, x, y - 64); X.stroke();
+}
+
+/* ---------- scenes ---------- */
+const scenes = [];
+const add = (title, dur, draw) => scenes.push({ title, dur, draw });
+function card(kicker, title, sub) {
+  add(title, 3.2, t => {
+    X.fillStyle = CREAM; X.fillRect(0, 0, W, H);
+    for (let i = 0; i < 14; i++) heart(rnd(i) * W, rnd(i + 40) * H + Math.sin(t * 2 + i) * 8, 14 + rnd(i + 2) * 22, i % 2 ? '#ffd0da' : '#ffe3b8');
+    const k = prog(t, 0, .6);
+    text(kicker, W / 2, 250 + (1 - k) * 20, 30, '#c23a5a'); text(title, W / 2, 340, 72, INK, 'center', true);
+    if (sub) text(sub, W / 2, 430, 30, '#666');
+  });
+}
+
+/* Titel */
+add('Titel', 6, t => {
+  sky('#ffe3ec', '#fff8ec');
+  for (let i = 0; i < 16; i++) heart(rnd(i) * W, (rnd(i + 40) * H + H - t * 30 * (1 + rnd(i))) % H, 14 + rnd(i + 2) * 22, i % 2 ? '#ffc2d0' : '#ffe0b0');
+  text('Cedric & Samira', W / 2, 210, 96, INK, 'center', true);
+  text('Eine Strichmännchen-Liebesgeschichte', W / 2, 300, 36, '#c23a5a');
+  const b = Math.sin(t * 4) * 5;
+  C(540, 610, { s: 1.5, bob: b, aR: 1.2, dir: 1, blush: true }); S(740, 610, { s: 1.5, bob: -b, aL: -1.2, dir: -1, blush: true });
+  heart(640, 400 + Math.sin(t * 3) * 8, 44 + Math.sin(t * 6) * 6);
+});
+
+/* 1 – Das Fest */
+card('Kapitel 1', 'Das Fest');
+add('Das Fest', 25, t => {
+  sky('#3b2a5c', '#e98a6b', '#f7c59f'); stars(t, 40, .3); ground(600, '#5d7a4a'); lampions(t, 60);
+  table(120, 600, 120, 110); beer(100, 490); beer(140, 490);
+  const sx = lerp(1400, 800, prog(t, 1, 5)), kx = lerp(1540, 940, prog(t, 1, 5)), wk = t < 5 ? t * 9 : undefined;
+  const chat = inT(t, 17.5, 25);
+  fig(230, 600, { s: 1.25, c: '#777', hair: 'cap', hc: '#444', dir: 1 });
+  C(380, 600, { s: 1.25, name: t < 6 ? 'Cedric' : '', face: inT(t, 11, 14.5) ? 'laugh' : t >= 14.5 ? 'flat' : 'smile', sweat: inT(t, 14.5, 25), aR: inT(t, 11, 14.5) ? 2.2 : .35, blush: t >= 14.5 });
+  fig(560, 600, { s: 1.25, c: '#2e9e6b', hair: 'spiky', hc: '#d9a441', name: t < 6 ? 'Lars' : '', aR: inT(t, 8.5, 11) ? 2.4 + Math.sin(t * 10) * .3 : .35, face: chat && Math.sin(t * 3) > 0 ? 'laugh' : 'smile' });
+  S(sx, 600, { s: 1.25, dir: -1, walk: wk, name: inT(t, 4, 8) ? 'Samira' : '', aL: inT(t, 5, 8.5) ? -2.5 + Math.sin(t * 10) * .3 : -.35, face: inT(t, 14.5, 17.5) ? 'flat' : chat && Math.sin(t * 3) < 0 ? 'laugh' : 'smile' });
+  fig(kx, 600, { s: 1.25, c: '#7b4bb3', hair: 'bun', hc: '#c98a3a', dress: '#b99be0', dir: -1, walk: wk, name: inT(t, 4, 8) ? 'Kollegin' : '' });
+  const ty = topY(600, 1.25);
+  say(t, 5, 8.5, 'Hallo Lars! Hey, wie geht’s?', 800, ty);
+  say(t, 8.5, 11, 'Hey Samira! Gut – und dir?', 560, ty);
+  say(t, 11, 14.5, 'Höhö … *dummer Spruch*', 380, ty, { bold: true });
+  say(t, 14.7, 17.5, '…', 800, ty, { fs: 40 }); say(t, 14.7, 17.5, '…', 560, ty, { fs: 40 });
+  pop(t, 15, 17.3, 'zirp, zirp', 1090, 520, 26, '#fff');
+  if (chat) { const k = Math.floor(t * 1.2) % 2; bubble(k ? 'bla bla bla' : 'haha, ja!', k ? 800 : 560, ty, { fs: 22 }); }
+  cap(t, 0.5, 4.5, 'Ein Fest. Cedric ist mit seinen Kollegen da. Samira kommt mit einer Kollegin – und sie kennt Lars.');
+  cap(t, 18, 25, 'Lars und Samira reden noch ein bisschen. Sonst passiert nichts. Noch nicht …');
+});
+
+/* 2 – Oktoberfest */
+card('Kapitel 2', 'Oktoberfest', 'in Kappelen');
+function tent(t) {
+  X.fillStyle = '#f4ead7'; X.fillRect(0, 0, W, H);
+  for (let i = 0; i < 22; i++) for (let j = 0; j < 3; j++) { X.fillStyle = (i + j) % 2 ? '#4a90e2' : '#fff'; X.beginPath(); const x = i * 64 - 32 + (j % 2) * 32, y = j * 40; X.moveTo(x, y + 20); X.lineTo(x + 32, y); X.lineTo(x + 64, y + 20); X.lineTo(x + 32, y + 40); X.fill(); }
+  lampions(t, 130, 10); ground(600, '#c9a26b'); X.fillStyle = '#b98b55'; for (let i = 0; i < 8; i++) X.fillRect(i * 170, 600, 4, 120);
+}
+add('Oktoberfest', 27, t => {
+  tent(t);
+  const m = prog(t, 13, 16), en = prog(t, 3, 7), wk = (t > 3 && t < 7) || (t > 13 && t < 16) ? t * 9 : undefined;
+  const laugh = t > 16, f = (ph) => laugh && Math.sin(t * 4 + ph) > 0 ? 'laugh' : 'smile', b = ph => laugh ? Math.abs(Math.sin(t * 5 + ph)) * -6 : 0;
+  const k1 = fig(120, 600, { s: 1.2, c: '#777', hair: 'cap', hc: '#444', aR: 1.5, face: f(1), bob: b(1) }); beer(k1.hr.x, k1.hr.y + 14);
+  const ce = C(270, 600, { s: 1.2, aR: inT(t, 16, 19) ? 2.5 : 1.5, face: f(2), bob: b(2), name: t < 4 ? 'Cedric' : '' }); beer(ce.hr.x, ce.hr.y + 14);
+  const k2 = fig(420, 600, { s: 1.2, c: '#b5651d', hair: 'curly', hc: '#3b2a1a', aR: 1.5, face: f(3), bob: b(3), name: inT(t, 8, 13) ? 'Kollege' : '' }); beer(k2.hr.x, k2.hr.y + 14);
+  const ox = 1500 - en * 420 - m * 90;
+  const ex = fig(ox - 480, 600, { s: 1.2, c: '#2a8c8c', hair: 'short', hc: '#222', dir: -1, walk: wk, aL: inT(t, 8, 11) ? -2.5 + Math.sin(t * 10) * .25 : -1.5, face: f(4), bob: b(4), name: inT(t, 4, 8) ? 'Ex-Freund' : '' }); beer(ex.hl.x, ex.hl.y + 14);
+  S(ox - 330, 600, { s: 1.2, dir: -1, walk: wk, face: f(5), bob: b(5), aL: inT(t, 19, 22) ? -2.4 : -.35, name: inT(t, 4, 8) ? 'Samira' : '', blush: laugh });
+  fig(ox - 180, 600, { s: 1.2, c: '#a05a9c', hair: 'bun', hc: '#7a3b1e', dress: '#d9a6d6', dir: -1, walk: wk, face: f(6), bob: b(6), name: inT(t, 4, 8) ? 'Ex-Freundin' : '' });
+  const ty = topY(600, 1.2);
+  say(t, 8, 11, 'Hey! Dich kenn ich doch!', ox - 480, ty);
+  say(t, 11, 13.5, 'Ja Mann! Kommt rüber zu uns!', 420, ty);
+  say(t, 16, 19, 'Prost! *Spruch*', 270, ty, { bold: true });
+  say(t, 19, 22, 'Haha! *Spruch zurück*', ox - 330, ty, { bold: true });
+  if (laugh) for (let i = 0; i < 4; i++) pop(t, 16.5 + i * 2.4, 18.5 + i * 2.4, 'haha', 200 + rnd(i) * 800, 330 + rnd(i + 4) * 60, 30, '#e07a1f', (rnd(i) - .5) * .5);
+  cap(t, 0.4, 3.8, 'Cedric geht mit seinen Kollegen ans Oktoberfest in Kappelen.');
+  cap(t, 4.2, 8, 'Samira ist auch da – unterwegs mit einem Ex-Paar.');
+  cap(t, 22.3, 27, 'Der Ex-Freund kennt einen Kollegen von Cedric. So kommen die Gruppen zusammen – und es fliegen Sprüche.');
+});
+add('Parkplatz', 14, t => {
+  sky('#141b3c', '#2c3a6b'); stars(t); moon(1080, 110); ground(600, '#3c3f4a');
+  X.fillStyle = '#2f6fde'; rr(90, 330, 70, 70, 10); X.fill(); text('P', 125, 367, 50, '#fff', 'center', true); X.fillStyle = '#888'; X.fillRect(121, 400, 8, 200);
+  X.strokeStyle = '#ddd'; X.lineWidth = 4; for (let i = 0; i < 6; i++) { X.beginPath(); X.moveTo(700 + i * 110, 610); X.lineTo(680 + i * 110, 700); X.stroke(); }
+  car(1100, 600, '#9aa5b1', .9); car(880, 596, '#c94f4f', .8);
+  const x = lerp(180, 620, clamp(t / 13)), wk = t * 6;
+  X.globalAlpha = .45; fig(x - 200, 596, { s: 1, c: '#888', walk: wk + 1 }); fig(x - 280, 596, { s: 1, c: '#888', walk: wk + 2, hair: 'bun', hc: '#666' }); fig(x - 130, 596, { s: 1, c: '#888', walk: wk + 3 }); X.globalAlpha = 1;
+  C(x, 600, { s: 1.25, walk: wk, face: Math.sin(t * 2) > 0 ? 'laugh' : 'smile', blush: t > 7 }); S(x + 120, 600, { s: 1.25, walk: wk + 1.5, dir: -1, face: Math.sin(t * 2) < 0 ? 'laugh' : 'smile' });
+  const ty = topY(600, 1.25), k = Math.floor(t / 2) % 2;
+  if (t > 1.5 && t < 11.5) bubble(k ? 'bla bla …' : 'hihi!', k ? x : x + 120, ty, { fs: 22 });
+  if (t > 9) heart(x + 10, ty - 110 - (t - 9) * 8, 20, '#f0506e', clamp((t - 9) / 1));
+  cap(t, 1, 13.6, 'Auf dem Weg zurück zum Parkplatz reden sie noch. Mehr passiert nicht.');
+});
+
+/* 3 – Heimfahrt */
+card('Kapitel 3', 'Bam, bam, bam', 'Die Heimfahrt');
+add('Heimfahrt', 18, t => {
+  sky('#10163a', '#28356a'); stars(t); moon(180, 110);
+  for (let i = 0; i < 7; i++) { const x = ((i * 240 - t * 260) % 1680 + 1680) % 1680 - 200; X.fillStyle = '#1d4a3a'; X.beginPath(); X.moveTo(x, 520); X.lineTo(x + 45, 360); X.lineTo(x + 90, 520); X.fill(); X.fillStyle = '#4a3423'; X.fillRect(x + 38, 520, 14, 40); }
+  ground(560, '#33363f'); X.fillStyle = '#f5d76e'; for (let i = 0; i < 9; i++) { const x = ((i * 180 - t * 520) % 1620 + 1620) % 1620 - 170; X.fillRect(x, 636, 90, 9); }
+  const beat = Math.abs(Math.sin(t * PI / .7)), cx = 640, cy = 630;
+  car(cx, cy, '#6fa8dc', 1.9, t, true);
+  head(cx + 35, cy - 170 + Math.sin(t * 14) * 2, 34, { c: BLUE, hair: 'short', hc: '#6b4423', face: 'love', blush: true });
+  heart(cx + 35, cy - 300, 60 + beat * 34);
+  for (let k = 0; k < 9; k++) pop(t, 3 + k * .7, 3.65 + k * .7, 'BAM!', cx + 35 + (k % 2 ? 210 : -210) + rnd(k) * 60 - 30, 200 + rnd(k + 3) * 110, 62, '#ff5c7a', (rnd(k) - .5) * .6);
+  say(t, 9.6, 17.6, 'Dieser Frau MUSS ich schreiben. Diese Energy!', cx + 60, cy - 230, { think: true, dx: 290, w: 340, fs: 30 });
+  cap(t, 0.4, 9, 'Auf der Heimfahrt ist Cedric hin und weg. Sein Kopf macht nur noch:');
+});
+
+/* 4 – Instagram */
+card('Kapitel 4', 'Die Nachricht');
+const msgs = [
+  [1.5, 1, 'Hey Samira! Das Oktoberfest war mega lustig mit dir.'], [6.5, 0, 'Hey Cedric! Fand ich auch :)'],
+  [10, 1, 'Hast du Lust auf ein Date?'], [14, 0, 'Ja, gern!'], [17, 1, 'Sternenmarkt? Ich lade dich ein!'], [20.5, 0, 'Abgemacht!']];
+add('Instagram', 25, t => {
+  sky('#ffe1ec', '#e3e9ff');
+  const yes = t > 14.4, j = yes ? -Math.abs(Math.sin(t * 6)) * 26 : 0;
+  const ce = C(210, 610, { s: 1.5, aR: 1.9, bob: j, face: yes ? 'laugh' : inT(t, 10, 14) ? 'o' : 'smile', blush: true, sweat: inT(t, 10.4, 14), name: 'Cedric' });
+  const sa = S(1070, 610, { s: 1.5, dir: -1, aL: -1.9, face: t > 6 ? 'smile' : 'flat', blush: t > 14, name: 'Samira' });
+  for (const p of [ce.hr, sa.hl]) { X.fillStyle = INK; rr(p.x - 11, p.y - 30, 22, 36, 5); X.fill(); }
+  if (yes) hearts(t, 210, 330, 5, 70, 14.4);
+  X.fillStyle = INK; rr(430, 30, 420, 660, 46); X.fill(); X.fillStyle = '#fff'; rr(444, 46, 392, 628, 34); X.fill();
+  const g = X.createLinearGradient(444, 0, 836, 0); g.addColorStop(0, '#f9a03f'); g.addColorStop(.5, '#e8437a'); g.addColorStop(1, '#8a4bd6');
+  X.save(); rr(444, 46, 392, 628, 34); X.clip(); X.fillStyle = g; X.fillRect(444, 46, 392, 78);
+  head(492, 86, 20, { c: ROSE, hair: 'long', hc: '#4a2a1a', dir: 0 }); text('samira', 528, 78, 26, '#fff', 'left', true); text('online', 528, 104, 16, '#ffe', 'left');
+  let y = 146;
+  for (const [mt, me, s] of msgs) {
+    X.font = `21px ${FONT}`; const lines = wrap(s, 240), bw = Math.max(...lines.map(l => X.measureText(l).width)) + 28, bh = lines.length * 27 + 18;
+    if (t >= mt) {
+      const a = clamp((t - mt) / .3), bx = me ? 822 - bw : 458;
+      X.globalAlpha = a; X.fillStyle = me ? '#3d7bff' : '#eceef3'; rr(bx, y + (1 - a) * 12, bw, bh, 18); X.fill();
+      lines.forEach((l, i) => text(l, bx + 14, y + (1 - a) * 12 + 23 + i * 27, 21, me ? '#fff' : INK, 'left')); X.globalAlpha = 1;
+      if (s === 'Abgemacht!') heart(bx + bw + 20, y + 20, 22 + Math.sin(t * 6) * 3);
+    } else if (!me && t >= mt - 2.2) {
+      X.fillStyle = '#eceef3'; rr(458, y, 74, 40, 18); X.fill(); for (let i = 0; i < 3; i++) { X.fillStyle = '#999'; X.beginPath(); X.arc(478 + i * 17, y + 20 - Math.abs(Math.sin(t * 6 - i * .7)) * 6, 5, 0, 7); X.fill(); }
+      break;
+    } else break;
+    y += bh + 14;
+  }
+  X.restore();
+  cap(t, 0.3, 5.5, 'Cedric schreibt ihr auf Instagram.'); cap(t, 21.2, 25, 'Sie antwortet – und sie verabreden sich für ein Date!');
+});
+
+/* 5 – Date 1 */
+card('Date Nr. 1', 'Sternenmarkt', 'Glühwein … und ein kleines Problem');
+function hut(x, w, col, label) {
+  X.lineWidth = 4; X.strokeStyle = INK; X.fillStyle = '#b07a4a'; rr(x, 330, w, 270, 6); X.fill(); X.stroke();
+  X.fillStyle = col; X.beginPath(); X.moveTo(x - 24, 334); X.lineTo(x + w / 2, 230); X.lineTo(x + w + 24, 334); X.closePath(); X.fill(); X.stroke();
+  X.fillStyle = '#fff'; X.beginPath(); X.moveTo(x - 24, 334); X.lineTo(x + w / 2, 230); X.lineTo(x + w + 24, 334); X.lineTo(x + w - 10, 322); X.lineTo(x + w / 2, 254); X.lineTo(x + 10, 322); X.fill();
+  X.fillStyle = '#3a2a22'; rr(x + 22, 380, w - 44, 110, 6); X.fill(); X.fillStyle = '#8a5a33'; rr(x - 8, 486, w + 16, 16, 4); X.fill(); X.stroke();
+  if (label) text(label, x + w / 2, 356, 24, '#fff', 'center', true);
+  X.fillStyle = '#ffe97a'; for (let i = 0; i < 5; i++) { const sx = x + 20 + i * (w - 40) / 4; X.beginPath(); for (let k = 0; k < 10; k++) { const a = k * PI / 5 - PI / 2, r = k % 2 ? 4 : 10; X.lineTo(sx + Math.cos(a) * r, 312 + Math.sin(a) * r); } X.fill(); }
+}
+add('Sternenmarkt', 30, t => {
+  sky('#131a3d', '#33407a'); stars(t, 50, .4); hut(40, 240, '#b03a3a'); hut(880, 330, '#2f7d5a', 'GLÜHWEIN'); ground(600, '#eef3fb');
+  const v = fig(1050, 598, { s: 1.05, c: '#555', hair: 'cap', hc: '#b03a3a', dir: -1, face: inT(t, 7, 10) ? 'flat' : 'smile' });
+  X.fillStyle = '#8a5a33'; X.strokeStyle = INK; X.lineWidth = 4; rr(872, 486, 346, 114, 4); X.fill(); X.stroke();
+  const fl = inT(t, 7, 13) ? (Math.sin(t * 8) > 0 ? '#ff5c5c' : '#ffd166') : '#ffd166';
+  X.fillStyle = fl; rr(905, 512, 280, 64, 8); X.fill(); X.stroke(); text('CASHLESS', 1045, 532, 26, INK, 'center', true); text('nur Karte!', 1045, 560, 20, INK);
+  const drink = t >= 19, shiver = inT(t, 22, 30) ? Math.sin(t * 40) * 3 : 0;
+  const ce = C(540, 600, { s: 1.3, aR: inT(t, 4, 13) || drink ? 1.7 : .35, face: inT(t, 10, 13) ? 'o' : inT(t, 13, 19) ? 'sad' : 'smile', blush: inT(t, 13, 22), sweat: inT(t, 10, 19), name: t < 4 ? 'Cedric' : '' });
+  const sa = S(720 + shiver, 600, { s: 1.3, dir: t < 13 || t > 16 ? -1 : 1, aR: inT(t, 13, 16.5) ? 1.9 : .35, aL: drink ? -1.7 : -.35, face: inT(t, 22, 25) ? 'wavy' : 'smile', name: t < 4 ? 'Samira' : '' });
+  if (inT(t, 4, 13)) note(ce.hr.x + 14, ce.hr.y - 6);
+  if (inT(t, 13, 16.5)) card2(sa.hr.x + 12, sa.hr.y - 6);
+  if (drink) { const cl = inT(t, 19.5, 21) ? Math.sin((t - 19.5) / 1.5 * PI) * 18 : 0; mug(ce.hr.x + 8 + cl, ce.hr.y, t); mug(sa.hl.x - 8 - cl, sa.hl.y, t); }
+  snow(t);
+  const ty = topY(600, 1.3);
+  say(t, 4, 7, 'Zwei Glühwein, bitte! Ich lade dich ein.', 540, ty);
+  say(t, 7, 10, 'Sorry – bei uns geht nur cashless!', 1050, topY(598, 1.05), { dx: -60 });
+  say(t, 10, 13, 'Ich hab nur Bargeld dabei …', 540, ty, { think: true });
+  say(t, 13, 16, 'Kein Problem – dann lade ich dich ein!', 720, ty);
+  say(t, 16, 19, 'Das ist mir gar nicht recht …', 540, ty);
+  pop(t, 19.8, 21.2, 'Pling!', 630, 420, 40, '#ffd166');
+  say(t, 22, 25, 'Brrr … mir ist kalt!', 720, ty);
+  say(t, 25, 29.7, 'Komm, wir gehen noch einen Cocktail trinken – dann kann ICH bezahlen!', 540, ty, { w: 380 });
+  cap(t, 0.4, 3.8, 'Cedric lädt Samira auf den Sternenmarkt ein.');
+});
+add('Hans im Glück', 17, t => {
+  sky('#f7e2b8', '#e9c58c'); ground(600, '#8a6240');
+  for (let i = 0; i < 9; i++) { const x = 40 + i * 150 + (i % 2) * 20; X.fillStyle = '#fbfbf7'; X.fillRect(x, 0, 26, 600); X.fillStyle = '#333'; for (let k = 0; k < 6; k++) X.fillRect(x + (k % 2 ? 0 : 12), 40 + k * 95 + rnd(i * 7 + k) * 40, 14, 5); }
+  for (let i = 0; i < 5; i++) { X.fillStyle = `rgba(255,220,120,${.5 + .2 * Math.sin(t * 2 + i)})`; X.beginPath(); X.arc(160 + i * 240, 90, 26, 0, 7); X.fill(); }
+  table(640, 600, 200, 130); cocktail(600, 470, '#ff8fa8'); cocktail(680, 470, '#7fd6c2');
+  const pay = t >= 8;
+  const ce = C(480, 600, { s: 1.3, aR: pay ? 2.6 : .9, face: pay ? 'laugh' : 'smile', bob: pay ? -Math.abs(Math.sin(t * 5)) * 8 : 0, name: t < 4 ? 'Cedric' : '' });
+  S(800, 600, { s: 1.3, dir: -1, aL: -.9, face: t > 10 ? 'laugh' : 'smile', blush: true, name: t < 4 ? 'Samira' : '' });
+  if (pay) { card2(ce.hr.x + 8, ce.hr.y - 12); for (let i = 0; i < 6; i++) { const a = i * PI / 3 + t * 2; X.strokeStyle = '#ffd166'; X.lineWidth = 4; X.beginPath(); X.moveTo(ce.hr.x + 8 + Math.cos(a) * 30, ce.hr.y - 12 + Math.sin(a) * 30); X.lineTo(ce.hr.x + 8 + Math.cos(a) * 44, ce.hr.y - 12 + Math.sin(a) * 44); X.stroke(); } }
+  const ty = topY(600, 1.3);
+  say(t, 4, 7.8, 'Mmh, viel wärmer hier!', 800, ty); say(t, 8, 12, 'Diesmal zahle ICH!', 480, ty, { bold: true });
+  if (t > 9) { const a = clamp((t - 9) / .4); X.globalAlpha = a; X.fillStyle = '#2e9e6b'; rr(700, 250, 160, 60, 14); X.fill(); X.strokeStyle = '#fff'; X.lineWidth = 6; X.beginPath(); X.moveTo(720, 280); X.lineTo(732, 292); X.lineTo(752, 268); X.stroke(); text('bezahlt', 800, 281, 24, '#fff', 'center', true); X.globalAlpha = 1; }
+  cap(t, 0.4, 3.8, 'Hans im Glück im Bahnhof Bern.'); cap(t, 12.2, 17, 'Endlich kann Cedric bezahlen. Ehre gerettet – Date Nr. 1 geschafft!');
+});
+
+/* 6 – Date 2 */
+card('Date Nr. 2', 'Papa Joe’s', 'Nasenbluten & eine angelaufene Scheibe');
+add('Abholen', 9, t => {
+  sky('#ffd9a8', '#ffeede'); ground(600, '#8fbf7a'); X.fillStyle = '#777'; X.fillRect(0, 630, W, 90);
+  X.lineWidth = 4; X.strokeStyle = INK; X.fillStyle = '#fbe9c6'; rr(900, 330, 300, 270, 6); X.fill(); X.stroke(); X.fillStyle = '#c4553f'; X.beginPath(); X.moveTo(870, 334); X.lineTo(1050, 210); X.lineTo(1230, 334); X.closePath(); X.fill(); X.stroke();
+  X.fillStyle = '#7a5a3a'; rr(1090, 470, 70, 130, 4); X.fill(); X.stroke(); X.fillStyle = '#bfe3ff'; rr(940, 390, 80, 70, 4); X.fill(); X.stroke();
+  const cx = lerp(-300, 560, prog(t, .5, 5));
+  S(840, 600, { s: 1.2, dir: -1, aL: t > 3 ? -2.5 + Math.sin(t * 10) * .3 : -.35, face: t > 3 ? 'laugh' : 'smile' });
+  car(cx, 690, '#6fa8dc', 1.5, t < 5 ? t : 0, true); head(cx + 28, 690 - 134, 27, { c: BLUE, hair: 'short', hc: '#6b4423', face: 'smile' });
+  pop(t, 5, 6.5, 'Tüüt!', cx + 130, 440, 40, '#e07a1f');
+  cap(t, 0.4, 8.6, 'Beim nächsten Mal holt Cedric Samira mit dem Auto ab.');
+});
+add('Papa Joe’s', 21, t => {
+  sky('#ffcf70', '#ff9e6d'); ground(600, '#3aa6a0');
+  X.fillStyle = '#e8437a'; rr(430, 60, 420, 90, 20); X.fill(); X.strokeStyle = INK; X.lineWidth = 4; X.stroke(); text('Papa Joe’s', 640, 106, 52, '#fff', 'center', true);
+  for (const px of [120, 1160]) { X.fillStyle = '#8a5a33'; X.fillRect(px - 8, 300, 16, 300); X.strokeStyle = '#2e9e6b'; X.lineWidth = 14; for (let i = 0; i < 6; i++) { const a = -PI / 2 + (i - 2.5) * .55 + Math.sin(t + i) * .03; X.beginPath(); X.moveTo(px, 300); X.quadraticCurveTo(px + Math.cos(a) * 80, 300 + Math.sin(a) * 110, px + Math.cos(a) * 150, 300 + Math.sin(a) * 60 + 40); X.stroke(); } }
+  chair(470, 600, 1, 1.3); chair(810, 600, -1, 1.3); table(640, 600, 230, 95);
+  for (const px of [585, 695]) { X.fillStyle = '#fff'; X.strokeStyle = INK; X.lineWidth = 3; X.beginPath(); X.ellipse(px, 502, 34, 8, 0, 0, 7); X.fill(); X.stroke(); X.fillStyle = px < 640 ? '#e07a1f' : '#7fb04a'; X.beginPath(); X.arc(px, 498, 16, PI, 0); X.fill(); }
+  const nb = t >= 4, tis = t >= 8;
+  const ce = C(470, 600, { s: 1.3, sit: 1, face: !nb ? 'smile' : t < 15 ? 'o' : 'flat', aR: tis ? 2.75 : 1.2, blush: nb, sweat: nb });
+  S(810, 600, { s: 1.3, sit: -1, dir: -1, face: t >= 11 ? 'laugh' : nb ? 'o' : 'smile', aL: -1.2, bob: t >= 11 ? -Math.abs(Math.sin(t * 6)) * 5 : 0 });
+  if (nb) { const nx = 470 + 8, ny = ce.hy + 4; X.fillStyle = '#e02b2b'; if (!tis) { const d = ((t - 4) * 1.2) % 1; X.beginPath(); X.arc(nx, ny + 6 + d * 40, 5, 0, 7); X.fill(); X.fillRect(nx - 2, ny, 4, 10); } else { X.fillStyle = '#fff'; X.strokeStyle = INK; X.lineWidth = 2.5; rr(nx - 12, ny - 8, 26, 22, 5); X.fill(); X.stroke(); X.fillStyle = '#e02b2b'; X.beginPath(); X.arc(nx + 2, ny + 6, 4, 0, 7); X.fill(); } }
+  const ty = topY(600, 1.3, 1);
+  say(t, 4.3, 8, 'Oh nein … Nasenbluten!', 470, ty); say(t, 8, 11, 'Schon wieder passiert mir etwas!', 470, ty, { think: true });
+  say(t, 11, 15, 'Hahaha! Du bist so witzig!', 810, ty);
+  cap(t, 0.4, 3.8, 'Sie essen im Papa Joe’s. Alles läuft gut. Bis …'); cap(t, 15.3, 21, 'Cedric ist es peinlich. Samira findet es witzig.');
+});
+const gb = [['Parkscheibe', '#3d7bff'], ['alte CD', '#c9c9d6'], ['Kaugummi', '#ff8fa8'], ['Quittung von 2015', '#fff'], ['1 Handschuh?!', '#b07a4a']];
+add('Im Auto', 28, t => {
+  X.fillStyle = '#2a2740'; X.fillRect(0, 0, W, H);
+  X.save(); X.beginPath(); X.moveTo(150, 50); X.lineTo(1130, 50); X.quadraticCurveTo(1190, 60, 1215, 410); X.lineTo(65, 410); X.quadraticCurveTo(90, 60, 150, 50); X.closePath(); X.clip();
+  sky('#131a3d', '#2b3870'); stars(t, 40, .35); X.fillStyle = '#3c3f4a'; X.fillRect(0, 300, W, 200); X.fillStyle = '#f5d76e'; for (let i = 0; i < 4; i++) X.fillRect(630 - i * 4, 310 + i * 28, 8 + i * 8, 14);
+  X.fillStyle = '#555'; X.fillRect(960, 120, 8, 200); X.fillStyle = '#ffe97a'; X.beginPath(); X.arc(964, 118, 18, 0, 7); X.fill(); X.fillStyle = 'rgba(255,233,122,.18)'; X.beginPath(); X.arc(964, 118, 70, 0, 7); X.fill();
+  const fog = lerp(.96, .06, prog(t, 5, 24)); X.fillStyle = `rgba(232,238,245,${fog})`; X.fillRect(0, 0, W, 420);
+  if (t > 9) { X.save(); X.translate(1000, 250); X.scale(4, 4); X.strokeStyle = `rgba(60,70,110,${fog * .8 * clamp((t - 9) / 1.5)})`; X.lineWidth = 2.2; X.beginPath(); X.moveTo(0, 8); X.bezierCurveTo(-22, -8, -10, -24, 0, -10); X.bezierCurveTo(10, -24, 22, -8, 0, 8); X.stroke(); X.restore(); }
+  X.restore();
+  X.fillStyle = '#3b3852'; rr(30, 400, 1220, 150, 30); X.fill(); X.strokeStyle = '#1c1a2c'; X.lineWidth = 5; X.stroke();
+  X.strokeStyle = '#15131f'; X.lineWidth = 18; X.beginPath(); X.arc(360, 480, 78, 0, 7); X.stroke(); X.lineWidth = 10; X.beginPath(); X.moveTo(282, 480); X.lineTo(438, 480); X.moveTo(360, 480); X.lineTo(360, 558); X.stroke();
+  const open = prog(t, 5.5, 6.5); X.fillStyle = '#15131f'; rr(800, 430, 250, 80, 10); X.fill(); X.fillStyle = '#4b4868'; X.strokeStyle = '#1c1a2c'; X.lineWidth = 4; rr(800, 430 + open * 76, 250, 80 - open * 60, 10); X.fill(); X.stroke();
+  gb.forEach(([lab, col], i) => {
+    const t0 = 7 + i * 2.6; if (t < t0) return; const p = prog(t, t0, t0 + 1), tx = 520 + i * 135, tyy = 200 + (i % 2) * 90 + Math.sin(t * 2 + i) * 6;
+    const x = lerp(925, tx, p), y = lerp(460, tyy, p) - Math.sin(p * PI) * 90;
+    X.save(); X.translate(x, y); X.rotate(Math.sin(t * 1.5 + i) * .12 + (1 - p) * 4); X.fillStyle = col; X.strokeStyle = INK; X.lineWidth = 3;
+    if (i === 1) { X.beginPath(); X.arc(0, 0, 26, 0, 7); X.fill(); X.stroke(); X.fillStyle = '#fff'; X.beginPath(); X.arc(0, 0, 7, 0, 7); X.fill(); X.stroke(); }
+    else if (i === 4) { rr(-16, -8, 32, 34, 8); X.fill(); X.stroke(); for (let k = 0; k < 4; k++) { rr(-16 + k * 8.4, -30, 7, 26, 3); X.fill(); X.stroke(); } }
+    else { rr(-28, -20, 56, 40, 6); X.fill(); X.stroke(); if (i === 0) text('P', 0, 1, 26, '#fff', 'center', true); }
+    X.restore(); if (p >= 1) text(lab, x, y + 48, 19, '#fff', 'center', true);
+  });
+  X.fillStyle = '#fff'; X.strokeStyle = INK; X.lineWidth = 4; X.beginPath(); X.arc(640, 620, 44, 0, 7); X.fill(); X.stroke(); const ha = t * 2.2; X.beginPath(); X.moveTo(640, 620); X.lineTo(640 + Math.sin(ha) * 32, 620 - Math.cos(ha) * 32); X.moveTo(640, 620); X.lineTo(640 + Math.sin(ha / 12) * 20, 620 - Math.cos(ha / 12) * 20); X.stroke();
+  text(t < 14 ? '15 Min. …' : '30 Min. …', 640, 690, 22, '#fff');
+  for (const sx of [360, 920]) { X.fillStyle = '#1f1d30'; rr(sx - 115, 520, 230, 240, 40); X.fill(); }
+  const lb = t > 8 ? Math.abs(Math.sin(t * 5)) * -5 : 0;
+  X.strokeStyle = BLUE; X.lineWidth = 12; X.lineCap = 'round'; X.beginPath(); X.moveTo(360, 660); X.lineTo(360, 720); X.moveTo(290, 720); X.lineTo(360, 680); X.lineTo(430, 720); X.stroke();
+  head(360, 600 + lb, 58, { c: BLUE, hair: 'short', hc: '#6b4423', face: 'back' });
+  X.strokeStyle = ROSE; X.beginPath(); X.moveTo(920, 680); X.lineTo(t > 6 ? 990 : 980, t > 6 ? 600 + Math.sin(t * 6) * 14 : 720); X.stroke();
+  head(920, 600 - lb, 58, { c: ROSE, hair: 'long', hc: '#4a2a1a', face: 'back' });
+  say(t, 7.5, 11, 'Uuuh, was ist DAS denn?', 920, 536); say(t, 12.5, 16, 'Eine CD?! Und eine Quittung von 2015!', 920, 536);
+  say(t, 16.5, 20, 'Hahaha, leg das wieder zurück!', 360, 536); say(t, 20.5, 23.5, 'Erst wenn ich ALLES gesehen habe.', 920, 536);
+  cap(t, 0.4, 6.5, 'Zurück beim Auto: Weil es so alt ist, ist die Scheibe komplett angelaufen.');
+  if (t > 23.8) { X.fillStyle = 'rgba(30,28,45,.82)'; rr(190, 150, 900, 110, 20); X.fill(); text('Samira räumt das ganze Handschuhfach aus. Sie haben mega Freude', 640, 185, 26, '#fff'); text('zusammen – und irgendwann sieht man endlich etwas. Ab nach Hause!', 640, 223, 26, '#fff'); }
+});
+
+/* 7 – Date 3 */
+card('Date Nr. 3', 'Nooch & Kino', 'mit einem Überraschungsgast');
+add('Nooch', 11, t => {
+  sky('#2d2a3a', '#4a3f52'); ground(600, '#6b4a3a');
+  for (let i = 0; i < 6; i++) { const x = 130 + i * 205; X.strokeStyle = '#222'; X.lineWidth = 3; X.beginPath(); X.moveTo(x, 0); X.lineTo(x, 110); X.stroke(); X.fillStyle = '#e8503a'; X.beginPath(); X.ellipse(x, 150, 38, 46, 0, 0, 7); X.fill(); X.fillStyle = `rgba(255,220,150,${.35 + .15 * Math.sin(t * 2 + i)})`; X.beginPath(); X.ellipse(x, 150, 24, 32, 0, 0, 7); X.fill(); }
+  text('NOOCH', 640, 290, 60, 'rgba(255,255,255,.18)', 'center', true);
+  chair(470, 600, 1, 1.3); chair(810, 600, -1, 1.3); table(640, 600, 230, 95); bowl(585, 527, t); bowl(695, 527, t + 1);
+  C(470, 600, { s: 1.3, sit: 1, aR: 1.2 + Math.sin(t * 4) * .15, face: 'smile', blush: true }); S(810, 600, { s: 1.3, sit: -1, dir: -1, aL: -1.2 - Math.sin(t * 4) * .15, face: t > 4 ? 'laugh' : 'smile' });
+  say(t, 4, 7.5, 'Mmmh, fein!', 810, topY(600, 1.3, 1)); say(t, 7.5, 10.6, 'Und heute geht nichts schief!', 470, topY(600, 1.3, 1), { think: true });
+  cap(t, 0.4, 3.8, 'Zuerst gehen sie im Nooch essen …');
+});
+add('Vor dem Kino', 25, t => {
+  sky('#141b3c', '#3a2f5e'); stars(t, 30, .25); ground(600, '#3c3f4a');
+  X.fillStyle = '#5a2a3a'; X.fillRect(760, 150, 480, 450); X.fillStyle = '#ffe97a'; X.strokeStyle = INK; X.lineWidth = 4; rr(800, 180, 400, 110, 10); X.fill(); X.stroke(); text('KINO', 1000, 237, 76, '#c23a5a', 'center', true);
+  for (let i = 0; i < 14; i++) { X.fillStyle = (Math.floor(t * 3) + i) % 2 ? '#fff' : '#ff8fa8'; X.beginPath(); X.arc(815 + i * 28.5, 300, 7, 0, 7); X.fill(); }
+  X.fillStyle = '#2a1520'; rr(930, 400, 140, 200, 6); X.fill();
+  const fx = lerp(-80, 330, prog(t, 1.5, 5)), wob = Math.sin(t * 3) * .14;
+  const fr = fig(fx + Math.sin(t * 2.2) * 14, 600, { s: 1.25, c: '#3f9c5a', hair: 'spiky', hc: '#222', face: 'dizzy', rot: wob, walk: t < 5 ? t * 7 : undefined, aR: 2.3 + Math.sin(t * 5) * .4, aL: -1.3, name: inT(t, 5, 13) ? 'Ex-Unihockey-Kollege' : '' });
+  X.strokeStyle = '#e8b04a'; X.lineWidth = 6; X.beginPath(); X.moveTo(fr.hl.x, fr.hl.y - 40); X.lineTo(fr.hl.x - 14, 590); X.quadraticCurveTo(fr.hl.x - 20, 602, fr.hl.x - 52, 600); X.stroke(); X.fillStyle = '#fff'; X.beginPath(); X.arc(fr.hl.x - 76, 592, 9, 0, 7); X.fill();
+  for (let i = 0; i < 3; i++) { const a = t * 3 + i * 2.1; X.fillStyle = '#ffd166'; X.beginPath(); X.arc(fr.x + Math.cos(a) * 44, fr.top - 6 + Math.sin(a) * 10, 5, 0, 7); X.fill(); }
+  const on = t > 5;
+  C(590, 600, { s: 1.25, dir: on ? -1 : 1, face: on ? (t > 9 ? 'flat' : 'o') : 'smile', sweat: t > 9, blush: t > 9 });
+  S(730, 600, { s: 1.25, dir: -1, face: t > 13 ? 'laugh' : on ? 'o' : 'smile', bob: t > 13 ? -Math.abs(Math.sin(t * 6)) * 6 : 0 });
+  const ty = topY(600, 1.25);
+  say(t, 5, 9, 'Eyyy Cedric! Wie geht’s?!', fx, ty); say(t, 9, 13, 'Ich bin voll auf Drogen!', fx, ty, { bold: true });
+  say(t, 13, 16.5, 'Oh no.', 590, ty, { think: true, fs: 32 }); say(t, 16.5, 20, 'Hahaha!', 730, ty, { fs: 30 });
+  cap(t, 0.4, 4.6, '… dann ins Kino. Doch davor trifft Cedric einen Kollegen vom früheren Unihockey-Team.');
+  cap(t, 20.2, 25, 'Super Eindruck, denkt Cedric. Aber Samira findet es einfach nur lustig.');
+});
+add('Im Kino', 16, t => {
+  X.fillStyle = '#17121f'; X.fillRect(0, 0, W, H);
+  const fl = .25 + .12 * Math.sin(t * 7) + .08 * Math.sin(t * 13); const g = X.createRadialGradient(640, -80, 50, 640, -80, 800); g.addColorStop(0, `rgba(190,215,255,${fl + .25})`); g.addColorStop(1, 'rgba(190,215,255,0)'); X.fillStyle = g; X.fillRect(0, 0, W, H);
+  for (let i = 0; i < 8; i++) { X.fillStyle = '#7a2233'; rr(60 + i * 150, 400, 130, 300, 30); X.fill(); }
+  const lean = prog(t, 4.5, 7.5);
+  X.fillStyle = '#fff'; X.strokeStyle = INK; X.lineWidth = 3; X.beginPath(); X.moveTo(452, 545); X.lineTo(508, 545); X.lineTo(500, 620); X.lineTo(460, 620); X.closePath(); X.fill(); X.stroke(); X.fillStyle = '#e02b2b'; X.fillRect(466, 548, 8, 70); X.fillRect(486, 548, 8, 70); X.fillStyle = '#ffe9a8'; for (let i = 0; i < 6; i++) { X.beginPath(); X.arc(458 + i * 9, 540 - (i % 2) * 7, 8, 0, 7); X.fill(); }
+  C(560, 700, { s: 1.6, dir: 0, face: lean > .6 ? 'love' : 'smile', blush: lean > .3, rot: lean * .06 });
+  S(700, 700, { s: 1.6, dir: 0, face: 'smile', blush: lean > .5, rot: -lean * .34 });
+  for (let i = 0; i < 8; i++) { X.fillStyle = '#5c1826'; rr(-20 + i * 170, 590, 150, 200, 30); X.fill(); }
+  if (lean > .9) hearts(t, 610, 400, 6, 90, 7.5);
+  cap(t, 8.5, 16, 'Im Kino lehnt sich Samira an ihn. Cedric ist glücklich.');
+});
+
+/* 8 – Letztes Date */
+card('Das letzte Date', 'Lötschberg & Bundesterrasse', 'Die grosse Frage');
+add('Lötschberg', 25, t => {
+  sky('#f3e3c3', '#e2c79a'); ground(600, '#8a6240');
+  X.fillStyle = '#c23a3a'; rr(470, 50, 340, 80, 14); X.fill(); text('Lötschberg', 640, 92, 44, '#fff', 'center', true);
+  for (let i = 0; i < 3; i++) { const lx = 215 + i * 425; X.strokeStyle = '#333'; X.lineWidth = 3; X.beginPath(); X.moveTo(lx, 0); X.lineTo(lx, 190); X.stroke(); X.fillStyle = '#ffe9a8'; X.beginPath(); X.moveTo(lx - 40, 240); X.lineTo(lx + 40, 240); X.lineTo(lx + 18, 190); X.lineTo(lx - 18, 190); X.fill(); }
+  const who = [[105, 1, '#777', 'cap'], [325, -1, '#777', 'bun'], [530, 1], [750, -1], [955, 1, '#777', 'curly'], [1175, -1, '#777', 'spiky']];
+  for (const [x, d] of who) chair(x, 600, d, 1.15);
+  for (const tx of [215, 640, 1065]) { table(tx, 600, 170, 85); X.fillStyle = '#ffd166'; X.strokeStyle = INK; X.lineWidth = 3; rr(tx - 22, 498, 44, 18, 4); X.fill(); X.stroke(); X.fillStyle = '#e8503a'; rr(tx - 4, 484, 8, 14, 2); X.fill(); }
+  const ty = topY(600, 1.15, 1), lnL = inT(t, 7.5, 11.5) ? .22 : 0, lnR = inT(t, 11.5, 15.5) ? -.22 : 0;
+  fig(105, 600, { s: 1.15, sit: 1, c: '#777', hair: 'cap', hc: '#444' });
+  fig(325, 600, { s: 1.15, sit: -1, dir: lnL ? 1 : -1, c: '#8a6f9c', hair: 'bun', hc: '#8a5a33', rot: lnL, face: lnL ? 'laugh' : 'smile' });
+  C(530, 600, { s: 1.15, sit: 1, face: t < 7.5 ? 'smile' : t < 16 ? 'flat' : 'smile', sweat: inT(t, 7.5, 16), blush: t < 7.5, aR: 1.1 });
+  S(750, 600, { s: 1.15, sit: -1, dir: -1, face: t > 15.5 ? 'laugh' : 'smile', aL: -1.1, bob: t > 15.5 ? -Math.abs(Math.sin(t * 6)) * 4 : 0 });
+  fig(955, 600, { s: 1.15, sit: 1, dir: lnR ? -1 : 1, c: '#6f8a9c', hair: 'curly', hc: '#333', rot: lnR, face: 'smile' });
+  fig(1175, 600, { s: 1.15, sit: -1, dir: -1, c: '#777', hair: 'spiky', hc: '#b5651d' });
+  say(t, 4, 7.5, 'Samira, ich wollte dir schon lange …', 530, ty);
+  say(t, 7.5, 11.5, 'En Guete! Was esst ihr da Feines?', 345, ty);
+  say(t, 11.5, 15.5, 'Sorry – könnt ihr mir kurz das Salz geben?', 935, ty);
+  say(t, 15.5, 19.5, 'Hihi … sehr romantisch hier.', 750, ty);
+  cap(t, 0.4, 3.8, 'Das allerletzte Date: Essen im Lötschberg. Und schon wieder klappt etwas nicht …');
+  cap(t, 19.8, 25, 'Ihr Tisch ist so nah bei den anderen, dass alle fast miteinander reden. Nichts mit Romantik.');
+});
+function bundes(t) {
+  sky('#0f1538', '#2c3a78', '#56508f'); stars(t, 80, .6); moon(1120, 110, 46);
+  X.fillStyle = '#39457a'; X.beginPath(); X.moveTo(560, 520); X.lineTo(700, 400); X.lineTo(770, 450); X.lineTo(860, 370); X.lineTo(960, 440); X.lineTo(1060, 350); X.lineTo(1180, 450); X.lineTo(1280, 420); X.lineTo(1280, 520); X.fill();
+  X.fillStyle = '#e9eefc'; for (const [px, py] of [[860, 370], [1060, 350], [700, 400]]) { X.beginPath(); X.moveTo(px - 26, py + 24); X.lineTo(px, py); X.lineTo(px + 26, py + 24); X.lineTo(px + 8, py + 16); X.lineTo(px - 6, py + 26); X.fill(); }
+  X.fillStyle = '#1d2347'; X.fillRect(0, 300, 560, 240); X.fillRect(210, 240, 140, 70); X.fillRect(20, 250, 60, 60); X.fillRect(480, 250, 60, 60);
+  X.fillStyle = '#5fae98'; X.beginPath(); X.arc(280, 240, 62, PI, 0); X.fill(); X.fillRect(274, 150, 12, 30); X.beginPath(); X.moveTo(20, 250); X.lineTo(50, 215); X.lineTo(80, 250); X.fill(); X.beginPath(); X.moveTo(480, 250); X.lineTo(510, 215); X.lineTo(540, 250); X.fill();
+  for (let i = 0; i < 13; i++) for (let j = 0; j < 3; j++) { X.fillStyle = rnd(i * 5 + j) > .35 ? '#ffe9a8' : '#2b3260'; X.fillRect(28 + i * 40, 330 + j * 55, 16, 30); }
+  for (let i = 0; i < 40; i++) { X.fillStyle = `rgba(255,220,140,${.4 + .5 * rnd(i)})`; X.fillRect(570 + rnd(i + 20) * 700, 500 + rnd(i + 60) * 40, 5, 5); }
+  ground(600, '#6d6a7d'); X.fillStyle = '#c9c5d6'; X.fillRect(0, 500, W, 14); X.fillRect(0, 586, W, 14); for (let i = 0; i < 33; i++) rr(10 + i * 40, 514, 14, 72, 6), X.fill();
+}
+add('Bundesterrasse', 36, t => {
+  bundes(t);
+  const cx = lerp(-200, 560, prog(t, 0, 4.5)), wk = t < 4.5 ? t * 7 : undefined, yes = t >= 19, hold = prog(t, 24, 26);
+  const jump = yes && t < 24 ? -Math.abs(Math.sin((t - 19) * 5)) * 34 : 0, sx = cx + lerp(190, 130, hold);
+  const ce = C(cx, 620, { s: 1.4, walk: wk, bob: jump, face: yes ? 'laugh' : inT(t, 6, 19) ? 'o' : 'smile', blush: t > 6, sweat: inT(t, 11, 19), aR: hold ? lerp(.35, 1.1, hold) : inT(t, 6, 11) ? 1.3 : yes ? 2.7 : .35, aL: yes && t < 24 ? -2.7 : -.35 });
+  const sa = S(sx, 620, { s: 1.4, dir: -1, walk: wk !== undefined ? wk + 1.5 : undefined, face: inT(t, 11, 14.5) ? 'o' : inT(t, 14.5, 19) ? 'wavy' : t > 25 ? 'love' : 'smile', blush: t > 11, sweat: inT(t, 11, 22), aL: hold ? lerp(-.35, -1.1, hold) : -.35, aR: inT(t, 14.5, 17) ? 2.6 : .35 });
+  const ty = topY(620, 1.4);
+  say(t, 6, 11, 'Hey Samira … willst du mit mir zusammen sein?', cx, ty, { w: 360, fs: 28 });
+  pop(t, 11, 14.3, '!?', sx + 6, ty - 50, 90, '#ffd166');
+  say(t, 14.5, 19, 'Ja … okay … ich weiss nicht … aber JA!', sx, ty, { w: 330, fs: 28 });
+  if (yes) { hearts(t, (cx + sx) / 2, 420, 9, 190, 19); pop(t, 19, 21, 'JA!', (cx + sx) / 2, 300, 100, '#ff5c7a'); }
+  if (hold > .9) heart((cx + sx) / 2, 330 + Math.sin(t * 3) * 8, 70 + Math.sin(t * 6) * 8);
+  cap(t, 0.5, 5, 'Nach dem Essen gehen sie auf die Bundesterrasse.');
+  cap(t, 11.2, 14.4, 'Samira ist komplett überrumpelt.');
+  cap(t, 21, 27, '(Danach ist sie zuerst noch etwas unsicher. Aber das weiss Cedric noch nicht.)');
+  cap(t, 27.5, 36, 'Und im Endeffekt ist sie überglücklich, dass sie damals Ja gesagt hat.');
+});
+
+/* Finale */
+add('4 Jahre später', 18, t => {
+  sky('#ffd3e0', '#ffe9c7', '#fff8ec');
+  X.fillStyle = '#ffe08a'; X.beginPath(); X.arc(640, 640, 240 + Math.sin(t * 2) * 6, 0, 7); X.fill(); ground(600, '#a6d49a');
+  for (let i = 0; i < 22; i++) { const p = (t * .12 * (1 + rnd(i)) + rnd(i + 9)) % 1; heart(rnd(i) * W + Math.sin(t + i) * 20, H - p * H, 14 + rnd(i + 2) * 26, i % 3 ? '#f0506e' : '#ff9fb5', Math.sin(p * PI) * .8); }
+  const b = Math.sin(t * 4) * 6;
+  C(570, 600, { s: 1.5, bob: b, aR: 1.1, aL: -2.6, face: 'laugh', blush: true }); S(710, 600, { s: 1.5, dir: -1, bob: -b, aL: -1.1, aR: 2.6, face: 'laugh', blush: true });
+  heart(640, 300 + Math.sin(t * 3) * 6, 60 + Math.sin(t * 6) * 8);
+  const line = (a, s, y, size, col) => { if (t < a) return; X.globalAlpha = clamp((t - a) / .6); text(s, W / 2, y, size, col, 'center', true); X.globalAlpha = 1; };
+  line(.6, '4 Jahre später …', 90, 64, INK); line(4.5, 'Immer noch zusammen.', 170, 40, '#c23a5a'); line(8, 'Und immer noch happy. Jeden Tag.', 222, 40, '#c23a5a');
+  if (t > 12.5) { X.globalAlpha = clamp((t - 12.5) / .8); X.fillStyle = 'rgba(255,248,236,.9)'; rr(440, 640, 400, 66, 22); X.fill(); text('Ende', 620, 674, 44, INK, 'center', true); heart(710, 676, 30); X.globalAlpha = 1; }
+});
+
+/* ---------- player ---------- */
+let acc = 0; for (const s of scenes) { s.start = acc; acc += s.dur; }
+const TOTAL = acc; let T = 0, playing = false, last = 0;
+const $ = id => document.getElementById(id), fill = $('fill'), pp = $('pp'), overlay = $('overlay'), startBtn = $('start');
+for (const s of scenes) if (s.start) { const d = document.createElement('div'); d.className = 'tick'; d.style.left = (s.start / TOTAL * 100) + '%'; $('prog').appendChild(d); }
+const sceneAt = T => { for (let i = scenes.length - 1; i >= 0; i--) if (T >= scenes[i].start) return i; return 0; };
+const fmt = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+function render() {
+  const i = sceneAt(T), s = scenes[i], t = Math.min(T - s.start, s.dur - .001);
+  X.save(); X.globalAlpha = 1; X.clearRect(0, 0, W, H); s.draw(t); X.restore();
+  const f = Math.max(1 - t / .35, (t - (s.dur - .35)) / .35);
+  if (f > 0 && !(i === scenes.length - 1 && t > 1)) { X.fillStyle = `rgba(255,248,236,${clamp(f)})`; X.fillRect(0, 0, W, H); }
+  fill.style.width = (T / TOTAL * 100) + '%'; $('sc').textContent = s.title; $('tm').textContent = fmt(T) + ' / ' + fmt(TOTAL);
+}
+function frame(now) {
+  if (playing) { T += Math.min(.1, (now - last) / 1000); if (T >= TOTAL) { T = TOTAL - .01; setPlay(false); startBtn.innerHTML = '&#8635; Nochmal schauen'; overlay.classList.remove('hidden'); } }
+  last = now; render(); requestAnimationFrame(frame);
+}
+function setPlay(p) { playing = p; pp.innerHTML = p ? '&#10074;&#10074;' : '&#9654;&#xFE0E;'; if (p) overlay.classList.add('hidden'); }
+function toggle() { if (!playing && T >= TOTAL - .05) T = 0; setPlay(!playing); }
+function seek(v) { T = clamp(v, 0, TOTAL - .01); overlay.classList.add('hidden'); render(); }
+startBtn.onclick = () => { if (T >= TOTAL - .05) T = 0; setPlay(true); };
+pp.onclick = toggle; cv.onclick = toggle;
+$('next').onclick = () => { const i = sceneAt(T); seek(i < scenes.length - 1 ? scenes[i + 1].start : TOTAL); };
+$('prev').onclick = () => { const i = sceneAt(T); seek(T - scenes[i].start > 1.5 || i === 0 ? scenes[i].start : scenes[i - 1].start); };
+$('prog').onclick = e => { const r = e.currentTarget.getBoundingClientRect(); seek((e.clientX - r.left) / r.width * TOTAL); };
+$('fs').onclick = () => { const el = $('stage'); document.fullscreenElement ? document.exitFullscreen() : (el.requestFullscreen || el.webkitRequestFullscreen || (() => {})).call(el); };
+addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); toggle(); } else if (e.code === 'ArrowRight') $('next').click(); else if (e.code === 'ArrowLeft') $('prev').click(); });
+window.__film = { seek, scenes, TOTAL, render };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
