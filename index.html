@@ -43,6 +43,11 @@
 <div id="label"><span id="sc"></span><span id="tm"></span></div>
 
 <script>
+window.onerror = function (m, src, line) {
+  var o = document.getElementById('overlay'); o.className = '';
+  o.innerHTML = '<div style="background:#fff;color:#b00;padding:14px;border-radius:12px;max-width:90%;font:16px sans-serif">Fehler: ' + m + ' (Zeile ' + line + ')</div>';
+};
+(function () {
 'use strict';
 const cv = document.getElementById('c'), X = cv.getContext('2d');
 const W = 1280, H = 720, PI = Math.PI;
@@ -630,14 +635,20 @@ function render() {
   if (f > 0 && !(i === scenes.length - 1 && t > 1)) { X.fillStyle = `rgba(255,248,236,${clamp(f)})`; X.fillRect(0, 0, W, H); }
   fill.style.width = (T / TOTAL * 100) + '%'; $('sc').textContent = s.title; $('tm').textContent = fmt(T) + ' / ' + fmt(TOTAL);
 }
+let lastFrame = 0;
 function frame(now) {
+  if (now === undefined) now = performance.now();
+  lastFrame = now;
   if (playing) { T += Math.min(.1, (now - last) / 1000); if (T >= TOTAL) { T = TOTAL - .01; setPlay(false); startBtn.innerHTML = '&#8635; Nochmal schauen'; overlay.classList.remove('hidden'); } }
-  last = now; render(); requestAnimationFrame(frame);
+  last = now; render();
 }
+function loop(now) { frame(now); requestAnimationFrame(loop); }
 function setPlay(p) { playing = p; pp.innerHTML = p ? '&#10074;&#10074;' : '&#9654;&#xFE0E;'; if (p) overlay.classList.add('hidden'); }
 function toggle() { if (!playing && T >= TOTAL - .05) T = 0; setPlay(!playing); }
 function seek(v) { T = clamp(v, 0, TOTAL - .01); overlay.classList.add('hidden'); render(); }
-startBtn.onclick = () => { if (T >= TOTAL - .05) T = 0; setPlay(true); };
+const startFilm = e => { if (e) { e.preventDefault(); e.stopPropagation(); } if (T >= TOTAL - .05) T = 0; setPlay(true); };
+startBtn.addEventListener('click', startFilm); startBtn.addEventListener('touchend', startFilm);
+overlay.addEventListener('click', startFilm);
 pp.onclick = toggle; cv.onclick = toggle;
 $('next').onclick = () => { const i = sceneAt(T); seek(i < scenes.length - 1 ? scenes[i + 1].start : TOTAL); };
 $('prev').onclick = () => { const i = sceneAt(T); seek(T - scenes[i].start > 1.5 || i === 0 ? scenes[i].start : scenes[i - 1].start); };
@@ -645,7 +656,11 @@ $('prog').onclick = e => { const r = e.currentTarget.getBoundingClientRect(); se
 $('fs').onclick = () => { const el = $('stage'); document.fullscreenElement ? document.exitFullscreen() : (el.requestFullscreen || el.webkitRequestFullscreen || (() => {})).call(el); };
 addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); toggle(); } else if (e.code === 'ArrowRight') $('next').click(); else if (e.code === 'ArrowLeft') $('prev').click(); });
 window.__film = { seek, scenes, TOTAL, render };
-requestAnimationFrame(frame);
+render();
+requestAnimationFrame(loop);
+// Fallback, falls requestAnimationFrame (z. B. in einer eingebetteten Vorschau) nicht läuft
+setInterval(() => { if (performance.now() - lastFrame > 150) frame(); }, 40);
+})();
 </script>
 </body>
 </html>
